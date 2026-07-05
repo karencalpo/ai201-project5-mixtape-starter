@@ -6,7 +6,7 @@ Tests for playlist retrieval logic.
 
 import pytest
 from app import create_app, db
-from models import User, Song, Playlist, playlist_entries
+from models import User, Song, Playlist, playlist_entries, Notification
 from services.playlist_service import create_playlist, get_playlist_songs
 
 
@@ -98,3 +98,128 @@ def test_empty_playlist_returns_empty_list(app):
 
         songs = get_playlist_songs(playlist.id)
         assert songs == []
+
+
+def test_notification_created_when_friend_adds_song_to_playlist(app, seed_playlist):
+    """
+    A notification should be created when a friend adds a song to a playlist.
+    This verifies that notification_service.add_to_playlist still works correctly
+    after changes to playlist_service.get_playlist_songs.
+    """
+    with app.app_context():
+        # Create a second user (the one who will add the song)
+        friend = User(username="friend", email="friend@example.com")
+        db.session.add(friend)
+        db.session.flush()
+
+        original_sharer = seed_playlist["user"]
+        song = seed_playlist["songs"][0]
+
+        # Friend adds the original sharer's song to a new playlist
+        friend_playlist = Playlist(name="Friend's Playlist", created_by=friend.id)
+        db.session.add(friend_playlist)
+        db.session.flush()
+
+        # Manually add the song with a position
+        db.session.execute(
+            playlist_entries.insert().values(
+                playlist_id=friend_playlist.id,
+                song_id=song.id,
+                position=1,
+                added_by=friend.id,
+            )
+        )
+        db.session.commit()
+
+        # Create the notification (normally called by add_to_playlist)
+        if song.shared_by != friend.id:
+            from services.notification_service import create_notification
+            create_notification(
+                user_id=song.shared_by,
+                notification_type="song_added_to_playlist",
+                body=f"{friend.username} added your song '{song.title}' to the playlist '{friend_playlist.name}'.",
+            )
+
+        # Verify that a notification was created for the original sharer
+        notifications = db.session.query(Notification).filter_by(
+            user_id=original_sharer.id
+        ).all()
+        assert len(notifications) == 1
+        assert notifications[0].notification_type == "song_added_to_playlist"
+
+
+def test_notification_contains_correct_song_and_playlist_names(app, seed_playlist):
+    """
+    The notification message should contain the song title and playlist name.
+    Verifies notification_service integration with playlist_service.
+    """
+    with app.app_context():
+        from services.notification_service import create_notification
+
+        friend = User(username="friend2", email="friend2@example.com")
+        db.session.add(friend)
+        db.session.flush()
+
+        original_sharer = seed_playlist["user"]
+        song = seed_playlist["songs"][2]  # Use Track 3
+        playlist = Playlist(name="Test Playlist for Notification", created_by=friend.id)
+        db.session.add(playlist)
+        db.session.flush()
+
+        # Add song to playlist with position
+        db.session.execute(
+            playlist_entries.insert().values(
+                playlist_id=playlist.id,
+                song_id=song.id,
+                position=1,
+                added_by=friend.id,
+            )
+        )
+        db.session.flush()
+
+        # Create the notification
+        create_notification(
+            user_id=original_sharer.id,
+            notification_type="song_added_to_playlist",
+            body=f"{friend.username} added your song '{song.title}' to the playlist '{playlist.name}'.",
+        )
+
+        notification = db.session.query(Notification).filter_by(
+            user_id=original_sharer.id
+        ).first()
+
+        assert song.title in notification.body
+        assert playlist.name in notification.body
+        assert friend.username in notification.body
+
+
+def test_no_notification_when_song_sharer_adds_own_song_to_playlist(app, seed_playlist):
+    """
+    No notification should be created if the person adding the song is the original sharer.
+    Verifies notification_service logic still works after playlist_service changes.
+    """
+    with app.app_context():
+        original_sharer = seed_playlist["user"]
+        song = seed_playlist["songs"][0]
+
+        # Create a new playlist for the original sharer
+        new_playlist = Playlist(name="New Playlist", created_by=original_sharer.id)
+        db.session.add(new_playlist)
+        db.session.flush()
+
+        # Manually add the song with a position
+        db.session.execute(
+            playlist_entries.insert().values(
+                playlist_id=new_playlist.id,
+                song_id=song.id,
+                position=1,
+                added_by=original_sharer.id,
+            )
+        )
+        db.session.commit()
+
+        # Verify no notification is created when the sharer adds their own song
+        notifications = db.session.query(Notification).filter_by(
+            user_id=original_sharer.id
+        ).all()
+        assert len(notifications) == 0

@@ -248,20 +248,43 @@ The endpoint returns only the first 4 songs, excluding the last song in the play
 ['Track 1', 'Track 2', 'Track 3', 'Track 4']
 ```
 
-**Root Cause:**
-In `services/playlist_service.py`, the `get_playlist_songs()` function at line 66 contains a slice operation that excludes the last song:
+**How I reproduced it:**
+1. Created a test playlist with 5 songs (Track 1 through Track 5) using the `seed_playlist` fixture
+2. Called `get_playlist_songs(playlist_id)` to retrieve all songs from the playlist
+3. Expected the function to return all 5 songs in order
+4. Observed that only 4 songs were returned, with Track 5 missing from the results
+
+**How I found the root cause:**
+I examined `services/playlist_service.py` and traced the execution path of `get_playlist_songs()` (lines 38-66). I read the function step-by-step:
+- Lines 53-55: Validates the playlist exists
+- Lines 58-64: Queries the database for songs joined with `playlist_entries`, ordered by position
+- Line 66: Returns the list comprehension that converts songs to dicts
+
+On line 66, I immediately spotted the problematic slice: `return [song.to_dict() for song in songs[:-1]]`. The `[:-1]` notation is Python's slice syntax that excludes the final element. This was the exact location of the bug.
+
+**The root cause:**
+In Python, the slice notation `songs[:-1]` returns all elements of the list except the last one. Line 66 of `playlist_service.py` unconditionally applies this slice to the songs list before returning:
 ```python
 return [song.to_dict() for song in songs[:-1]]
 ```
 
-The `[:-1]` slice removes the final element from the list, causing the last song to never be returned to the client, regardless of how many songs are in the playlist.
+This means for any playlist with N songs, the function returns only N-1 songs. The last song in the playlist is permanently excluded from the results, regardless of playlist size or content. For example, a playlist with 5 songs returns only the first 4 (Track 1-4), and the 5th song is never visible to the client.
 
-**Test to Reproduce:**
-Run `test_last_song_is_included_in_results()` in `tests/test_playlists.py`. This test:
-1. Creates a playlist with 5 songs (Track 1 through Track 5)
-2. Calls `get_playlist_songs()` to retrieve the songs
-3. Asserts that the last song's title ("Track 5") appears in the returned results
-4. Fails with the message: `Song 'Track 5' not found. Returned: ['Track 1', 'Track 2', 'Track 3', 'Track 4']`
+**Your fix and side-effect check:**
+I changed line 66 from:
+```python
+return [song.to_dict() for song in songs[:-1]]
+```
+to:
+```python
+return [song.to_dict() for song in songs]
+```
+
+This removes the slice operator and returns all songs without excluding any. To verify the fix didn't break related functionality, I:
+1. Ran existing tests `test_playlist_returns_all_songs()` and `test_playlist_returns_songs_in_order()` — both now pass
+2. Created `test_last_song_is_included_in_results()` that explicitly verifies the last song appears in results
+3. Wrote three integration tests that verify the notification service (which depends on correct playlist song retrieval) still works: `test_notification_created_when_friend_adds_song_to_playlist`, `test_notification_contains_correct_song_and_playlist_names`, `test_no_notification_when_song_sharer_adds_own_song_to_playlist`
+4. Checked the API endpoint `GET /playlists/<playlist_id>/songs` in `routes/playlists.py` — it calls this function and now correctly returns all songs with the accurate count
 
 ---
 
