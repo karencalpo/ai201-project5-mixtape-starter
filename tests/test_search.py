@@ -4,6 +4,7 @@ tests/test_search.py — Mixtape
 Tests for song search logic.
 """
 
+import json
 import pytest
 from app import create_app, db
 from models import User, Song, Tag, song_tags
@@ -117,3 +118,44 @@ def test_search_returns_empty_for_no_match(app, seed_songs):
     with app.app_context():
         results = search_songs("zzz_no_match_zzz")
         assert results == []
+
+
+def test_search_no_duplicate_results_with_multi_tags(app, seed_songs):
+    """
+    Demonstrates the duplicate rows created by the outerjoin at the SQL level.
+
+    The outerjoin with song_tags creates one row per tag-song association.
+    Although SQLAlchemy's ORM deduplicates at the Python level, the underlying
+    SQL query produces multiple identical rows for songs with multiple tags.
+    """
+    with app.app_context():
+        # Query the raw SQL to see all rows including duplicates from the join
+        from sqlalchemy import text
+
+        query = text("""
+            SELECT s.id, s.title, s.artist, st.tag_id
+            FROM song s
+            LEFT OUTER JOIN song_tags st ON s.id = st.song_id
+            WHERE s.title LIKE '%Crown Heights%' OR s.artist LIKE '%Crown Heights%'
+        """)
+
+        raw_results = db.session.execute(query).fetchall()
+
+        print(f"\n\n=== All rows created by the outerjoin ===")
+        for i, row in enumerate(raw_results, 1):
+            print(f"Row {i}: {row[1]} by {row[2]} (tag_id: {row[3]})")
+
+        # FAIL if outerjoin produced more than one row
+        assert len(raw_results) <= 1, \
+            f"ERROR: Outerjoin produced {len(raw_results)} rows for a single song. Should produce only 1 row."
+
+        # Now show what search_songs returns (deduplicated by ORM)
+        results = search_songs("Crown Heights")
+
+        print(f"\n=== Search function results (deduplicated by ORM) ===")
+        print(json.dumps(results, indent=2))
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Crown Heights Anthem"
+        assert len(results[0]["tags"]) == 3
+

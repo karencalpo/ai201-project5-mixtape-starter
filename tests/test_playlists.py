@@ -71,6 +71,20 @@ def test_playlist_returns_songs_in_order(app, seed_playlist):
         assert titles == ["Track 1", "Track 2", "Track 3", "Track 4", "Track 5"]
 
 
+def test_last_song_is_included_in_results(app, seed_playlist):
+    """
+    The last song added to a playlist should appear in the results.
+    """
+    with app.app_context():
+        playlist_id = seed_playlist["playlist"].id
+        last_song_title = seed_playlist["songs"][-1].title
+
+        songs = get_playlist_songs(playlist_id)
+        song_titles = [s["title"] for s in songs]
+
+        assert last_song_title in song_titles, f"Song '{last_song_title}' not found. Returned: {song_titles}"
+
+
 def test_empty_playlist_returns_empty_list(app):
     """An empty playlist should return an empty list without error."""
     with app.app_context():

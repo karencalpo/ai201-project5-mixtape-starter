@@ -4,7 +4,7 @@ app.py — Mixtape
 Flask application factory and database setup.
 """
 
-from flask import Flask
+from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
 import os
 
@@ -25,6 +25,11 @@ def create_app(config=None):
         app.config.update(config)
 
     db.init_app(app)
+
+    # Root route
+    @app.route("/")
+    def index():
+        return jsonify({"message": "Mixtape API", "status": "running"})
 
     # Register blueprints
     from routes.songs import songs_bp

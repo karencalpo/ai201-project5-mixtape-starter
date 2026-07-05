@@ -94,3 +94,28 @@ def test_streak_increments_on_sunday(app, user):
 
         update_listening_streak(u, sunday)
         assert u.listening_streak == 2  # Should increment, not reset
+        
+def test_streak_bug_saturday_to_tuesday_reset(app, user):
+    """
+    Bug reproduction: confirm streak behavior starting Saturday through Tuesday.
+    Streak should be 2 on Sunday, skips Monday, then Tuesday.
+    """
+    with app.app_context():
+        u = db.session.get(User, user.id)
+        saturday = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)  # weekday() == 5
+        sunday = datetime(2024, 6, 16, 12, 0, 0, tzinfo=timezone.utc)    # weekday() == 6
+        monday = datetime(2024, 6, 17, 12, 0, 0, tzinfo=timezone.utc)   # weekday() == 0
+        tuesday = datetime(2024, 6, 18, 12, 0, 0, tzinfo=timezone.utc)   # weekday() == 1
+        wednesday = datetime(2024, 6, 19, 12, 0, 0, tzinfo=timezone.utc) # weekday() == 2
+
+        # User listens on Saturday
+        update_listening_streak(u, saturday)
+        assert u.listening_streak == 1
+
+        # User listens on Sunday (consecutive day)
+        update_listening_streak(u, sunday)
+        assert u.listening_streak == 2, f"Expected streak of 2 on Sunday, but got {u.listening_streak}"
+
+        # User listens on Monday (consecutive day)
+        update_listening_streak(u, monday)
+        assert u.listening_streak == 3, f"Expected streak of 3 on Monday, but got {u.listening_streak}"
