@@ -268,13 +268,20 @@ Run `test_last_song_is_included_in_results()` in `tests/test_playlists.py`. This
 ## AI Usage
 
 ### Workflow Overview
-The debugging approach for all three bugs followed a consistent workflow: identify a failing test → locate the suspicious code region → use AI to understand what the code is doing and why it might be wrong → verify the diagnosis by reading the code myself.
+The debugging approach for all three bugs followed a consistent workflow: identify a failing test → trace the code path from symptom to suspicious code → use AI to understand edge cases or mechanisms → verify the diagnosis by re-reading the code and forming a hypothesis → confirm by understanding the exact execution flow.
 
-### Bug #5: Last Song in Playlist (Most Direct)
-**Finding the code:** The test `test_last_song_is_included_in_results()` clearly fails because the last song is missing. Looking at the relevant service function `get_playlist_songs()` in `services/playlist_service.py` line 66, I spotted the suspicious code immediately: `return [song.to_dict() for song in songs[:-1]]`.
+### Bug #5: Last Song in Playlist
 
-**AI's role:** I first asked the AI to explain the code flow in `services/playlist_service.py`. I noticed something strange, then asked AI to explain what the `[:-1]` slice does in Python. AI confirmed that this slice excludes the last element from a list, which is exactly why the last song disappears.
+**Tracing from symptom to code:**
+The test `test_last_song_is_included_in_results()` fails with: "Song 'Track 5' not found. Returned: ['Track 1', 'Track 2', 'Track 3', 'Track 4']". This symptom points to the retrieval logic for playlist songs. I traced the call chain:
+- Route called: `GET /playlists/<playlist_id>/songs` in `routes/playlists.py`
+- Routes to service: `playlist_service.get_playlist_songs(playlist_id)` in `services/playlist_service.py`
+- Read the function and found the suspicious slice at line 66: `return [song.to_dict() for song in songs[:-1]]`
 
-**Verification:** I read the code myself and could clearly see that `[:-1]` removes the final item. The fix was straightforward: remove the slice operation to return all songs.
+**AI's role:** I had narrowed it to a specific function and asked AI to confirm: "What does the Python slice `[:-1]` do to a list?" AI confirmed this removes the last element, explaining exactly why the last song disappears.
 
-**Lesson:** This was the clearest case where the buggy code was immediately visible and AI helped me understand the exact mechanism of the bug.
+**Verification:** I read line 66 in `playlist_service.py` myself and saw the problematic slice. I traced what `songs` contains (a list of Song objects ordered by position from the database query on lines 62-65) and confirmed that `[:-1]` removes the final song before returning.
+
+**Hypothesis & Fix:** The slice operation is a bug—there's no reason to exclude the last song. Removing `[:-1]` returns all songs as expected.
+
+---
