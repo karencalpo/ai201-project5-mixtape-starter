@@ -134,7 +134,7 @@ Mixtape is a Flask-based social music sharing app where users share songs with f
 
 - **services/streak_service.py** — Listening streak tracking.
   - `record_listening_event()` — Create a listening event and update the user's streak.
-  - `update_listening_streak()` — Core streak logic: increments on consecutive calendar days, resets if a day is skipped (except Sundays, which can have a gap without resetting).
+  - `update_listening_streak()` — Core streak logic: increments on consecutive calendar days, resets if a day is skipped.
   - `get_streak()` — Fetch the current streak for a user.
 
 ### Utilities
