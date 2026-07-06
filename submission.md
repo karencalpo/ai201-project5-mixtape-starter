@@ -1,5 +1,67 @@
 # Mixtape Codebase Map
 
+## AI Usage
+
+### Workflow Overview
+The debugging approach for all three bugs followed a consistent workflow: identify a failing test → trace the code path from symptom to suspicious code → use AI to understand edge cases or mechanisms → verify the diagnosis by re-reading the code and forming a hypothesis → confirm by understanding the exact execution flow.
+
+### Bug #1: Listening Streak Resets on Consecutive Days
+
+**Tracing from symptom to code:**
+The test `test_streak_bug_saturday_to_tuesday_reset()` fails with: "Expected streak of 3, got 1". This symptom points to the streak increment logic. I traced the call chain:
+- Route called: `POST /songs/<song_id>/listen` in `routes/songs.py`
+- Routes to service: `streak_service.record_listening_event()` in `services/streak_service.py`
+- Read the function and found the key decision logic in `update_listening_streak()` at lines 42-78
+
+**AI's role:** I had the code in front of me but the streak logic was complex. I asked AI: "Why would the condition `days_since_last == 1 and today.weekday() != 6` prevent a streak from incrementing on Sunday when listening on Saturday and then Sunday?" AI explained that this condition would evaluate to `True and False = False` on Sunday (since `weekday() != 6` is false when today is Sunday), causing the entire increment block to be skipped.
+
+**Verification:** I re-read lines 70-78 in `streak_service.py` myself:
+- Line 73: `elif days_since_last == 1 and today.weekday() != 6:`
+- Line 74: `user.listening_streak += 1`
+
+I traced the execution: if a user listens on Saturday (weekday 5) and then Sunday (weekday 6), `days_since_last` is 1, but `today.weekday() != 6` is false, so the condition fails and the increment never happens. Then on Monday, `days_since_last` is now 2 (since the last recorded event was Saturday, not Sunday), triggering a reset instead.
+
+**Hypothesis & Fix:** The `and today.weekday() != 6` exclusion is preventing Sundays from being treated as consecutive days. The developer tried to implement a "weekend grace period" but implemented it incorrectly. Removing the condition allows the streak to increment on any consecutive day, including Sunday.
+
+---
+
+### Bug #5: Last Song in Playlist
+
+**Tracing from symptom to code:**
+The test `test_last_song_is_included_in_results()` fails with: "Song 'Track 5' not found. Returned: ['Track 1', 'Track 2', 'Track 3', 'Track 4']". This symptom points to the retrieval logic for playlist songs. I traced the call chain:
+- Route called: `GET /playlists/<playlist_id>/songs` in `routes/playlists.py`
+- Routes to service: `playlist_service.get_playlist_songs(playlist_id)` in `services/playlist_service.py`
+- Read the function and found the suspicious slice at line 66: `return [song.to_dict() for song in songs[:-1]]`
+
+**AI's role:** I had narrowed it to a specific function and asked AI to confirm: "What does the Python slice `[:-1]` do to a list?" AI confirmed this removes the last element, explaining exactly why the last song disappears.
+
+**Verification:** I read line 66 in `playlist_service.py` myself and saw the problematic slice. I traced what `songs` contains (a list of Song objects ordered by position from the database query on lines 62-65) and confirmed that `[:-1]` removes the final song before returning.
+
+**Hypothesis & Fix:** The slice operation is a bug—there's no reason to exclude the last song. Removing `[:-1]` returns all songs as expected.
+
+---
+
+### Bug #3: Duplicate Search Results
+
+**Tracing from symptom to code:**
+The test for songs with multiple tags showed that search might be inefficient. I traced the call chain:
+- Route called: `GET /songs/search?q=<query>` in `routes/songs.py`
+- Routes to service: `search_service.search_songs(query)` in `services/search_service.py`
+- Read the query builder in lines 44-47 of `search_service.py` and saw a `LEFT OUTER JOIN` with `song_tags`
+
+**Navigation strategy:** The test output and codebase map suggested the Song model already has a `tags` relationship, so I checked `models.py`. On line 26, I saw `tags = relationship('Tag', ...)` with `lazy="subquery"`. This is a key detail: the relationship automatically loads all tags without an explicit join.
+
+**AI's role:** I asked AI: "In SQLAlchemy, if a model has a many-to-many relationship with `lazy='subquery'`, why would adding a `LEFT OUTER JOIN` to the same table be redundant?" AI explained that the join creates one row per tag association, causing SQLAlchemy's ORM to deduplicate at the Python level, but the SQL itself is inefficient and creates unnecessary database load.
+
+**Verification:** I examined the code path:
+- Lines 44-47 in `search_service.py` perform the outerjoin
+- Line 26 in `models.py` shows the Song model already has `tags` defined with lazy loading
+- The query is redundant: the `tags` relationship already handles loading all associated tags
+
+**Hypothesis & Fix:** The `LEFT OUTER JOIN` is unnecessary because SQLAlchemy's relationship lazy loading already handles it. Removing the outerjoin simplifies the query without losing any data.
+
+---
+
 ## Project Overview
 
 Mixtape is a Flask-based social music sharing app where users share songs with friends, rate them, listen to them, and collaborate on playlists. The app generates notifications when friends interact with shared content and tracks listening streaks.
@@ -328,44 +390,3 @@ This removes the slice operator and returns all songs without excluding any. To 
 3. Wrote three integration tests that verify the notification service (which depends on correct playlist song retrieval) still works: `test_notification_created_when_friend_adds_song_to_playlist`, `test_notification_contains_correct_song_and_playlist_names`, `test_no_notification_when_song_sharer_adds_own_song_to_playlist`
 4. Checked the API endpoint `GET /playlists/<playlist_id>/songs` in `routes/playlists.py` — it calls this function and now correctly returns all songs with the accurate count
 
----
-
-## AI Usage
-
-### Workflow Overview
-The debugging approach for all three bugs followed a consistent workflow: identify a failing test → trace the code path from symptom to suspicious code → use AI to understand edge cases or mechanisms → verify the diagnosis by re-reading the code and forming a hypothesis → confirm by understanding the exact execution flow.
-
-### Bug #5: Last Song in Playlist
-
-**Tracing from symptom to code:**
-The test `test_last_song_is_included_in_results()` fails with: "Song 'Track 5' not found. Returned: ['Track 1', 'Track 2', 'Track 3', 'Track 4']". This symptom points to the retrieval logic for playlist songs. I traced the call chain:
-- Route called: `GET /playlists/<playlist_id>/songs` in `routes/playlists.py`
-- Routes to service: `playlist_service.get_playlist_songs(playlist_id)` in `services/playlist_service.py`
-- Read the function and found the suspicious slice at line 66: `return [song.to_dict() for song in songs[:-1]]`
-
-**AI's role:** I had narrowed it to a specific function and asked AI to confirm: "What does the Python slice `[:-1]` do to a list?" AI confirmed this removes the last element, explaining exactly why the last song disappears.
-
-**Verification:** I read line 66 in `playlist_service.py` myself and saw the problematic slice. I traced what `songs` contains (a list of Song objects ordered by position from the database query on lines 62-65) and confirmed that `[:-1]` removes the final song before returning.
-
-**Hypothesis & Fix:** The slice operation is a bug—there's no reason to exclude the last song. Removing `[:-1]` returns all songs as expected.
-
----
-
-### Bug #3: Duplicate Search Results
-
-**Tracing from symptom to code:**
-The test for songs with multiple tags showed that search might be inefficient. I traced the call chain:
-- Route called: `GET /songs/search?q=<query>` in `routes/songs.py`
-- Routes to service: `search_service.search_songs(query)` in `services/search_service.py`
-- Read the query builder in lines 44-47 of `search_service.py` and saw a `LEFT OUTER JOIN` with `song_tags`
-
-**Navigation strategy:** The test output and codebase map suggested the Song model already has a `tags` relationship, so I checked `models.py`. On line 26, I saw `tags = relationship('Tag', ...)` with `lazy="subquery"`. This is a key detail: the relationship automatically loads all tags without an explicit join.
-
-**AI's role:** I asked AI: "In SQLAlchemy, if a model has a many-to-many relationship with `lazy='subquery'`, why would adding a `LEFT OUTER JOIN` to the same table be redundant?" AI explained that the join creates one row per tag association, causing SQLAlchemy's ORM to deduplicate at the Python level, but the SQL itself is inefficient and creates unnecessary database load.
-
-**Verification:** I examined the code path:
-- Lines 44-47 in `search_service.py` perform the outerjoin
-- Line 26 in `models.py` shows the Song model already has `tags` defined with lazy loading
-- The query is redundant: the `tags` relationship already handles loading all associated tags
-
-**Hypothesis & Fix:** The `LEFT OUTER JOIN` is unnecessary because SQLAlchemy's relationship lazy loading already handles it. Removing the outerjoin simplifies the query without losing any data.
