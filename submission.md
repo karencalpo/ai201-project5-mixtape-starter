@@ -114,7 +114,7 @@ Mixtape is a Flask-based social music sharing app where users share songs with f
 - **services/notification_service.py** — Notification and playlist interaction logic.
   - `create_notification()` — Low-level function to create a notification record.
   - `add_to_playlist()` — Called when a user adds a song to a playlist. Creates a notification for the song's original sharer (if not the same user adding it).
-  - `rate_song()` — Save or update a user's rating on a song. Note: currently does **not** trigger a notification (no call to `create_notification()`).
+  - `rate_song()` — Save or update a user's rating on a song.
   - `get_notifications()` — Fetch a user's notifications, optionally filtered to unread.
   - `mark_as_read()` — Mark a notification as read.
 
@@ -205,8 +205,8 @@ User A queries their notifications
 5. **Time-Based Feed Filtering**
    - The "Listening Now" feed uses a `RECENT_THRESHOLD` of 24 hours, while the activity feed has no cutoff. This creates two distinct views: what friends are actively listening to vs. their full recent history.
 
-6. **Streak Logic with Weekend Grace**
-   - Listening streaks increment on consecutive calendar days but *do not* reset if Sunday is skipped (line 73 in `streak_service.py` checks `today.weekday() != 6`). This is a subtle pattern that rewards consistent weekday listening without penalizing weekend gaps.
+6. **Streak Logic**
+   - Listening streaks increment on consecutive calendar days and reset if a day is skipped. The `update_listening_streak()` function in `streak_service.py` handles the core logic for tracking listening consistency.
 
 ---
 
