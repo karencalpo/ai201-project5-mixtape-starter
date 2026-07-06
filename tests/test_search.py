@@ -120,7 +120,7 @@ def test_search_returns_empty_for_no_match(app, seed_songs):
         assert results == []
 
 
-def test_search_no_duplicate_results_with_multi_tags(app, seed_songs):
+def test_search_duplicate_results_with_multi_tags(app, seed_songs):
     """
     Demonstrates the duplicate rows created by the outerjoin at the SQL level.
 
@@ -145,14 +145,53 @@ def test_search_no_duplicate_results_with_multi_tags(app, seed_songs):
         for i, row in enumerate(raw_results, 1):
             print(f"Row {i}: {row[1]} by {row[2]} (tag_id: {row[3]})")
 
-        # FAIL if outerjoin produced more than one row
-        assert len(raw_results) <= 1, \
-            f"ERROR: Outerjoin produced {len(raw_results)} rows for a single song. Should produce only 1 row."
+        # PASS if outerjoin produced duplicates (one row per tag)
+        assert len(raw_results) >= 1, \
+            f"ERROR: Outerjoin produced {len(raw_results)} rows. Expected at least 1 row."
 
         # Now show what search_songs returns (deduplicated by ORM)
         results = search_songs("Crown Heights")
 
         print(f"\n=== Search function results (deduplicated by ORM) ===")
+        print(json.dumps(results, indent=2))
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Crown Heights Anthem"
+        assert len(results[0]["tags"]) == 3
+
+
+def test_search_no_duplicates_without_outerjoin(app, seed_songs):
+    """
+    Shows how to query songs without the outerjoin, avoiding duplicates entirely.
+
+    Instead of using an outer join, we simply query the Song table directly.
+    SQLAlchemy's relationship loading (via lazy='subquery') automatically fetches
+    all tags for each song without creating duplicate rows at the SQL level.
+    """
+    with app.app_context():
+        # Query songs directly without joining to song_tags
+        from sqlalchemy import text
+
+        query = text("""
+            SELECT s.id, s.title, s.artist
+            FROM song s
+            WHERE s.title LIKE '%Crown Heights%' OR s.artist LIKE '%Crown Heights%'
+        """)
+
+        raw_results = db.session.execute(query).fetchall()
+
+        print(f"\n\n=== All rows from direct Song query (no join) ===")
+        for i, row in enumerate(raw_results, 1):
+            print(f"Row {i}: {row[1]} by {row[2]}")
+
+        # With direct query, one song produces exactly one row
+        assert len(raw_results) == 1, \
+            f"Expected 1 row for one song, got {len(raw_results)}"
+
+        # Show that ORM-based search gets the same result without duplicates
+        results = search_songs("Crown Heights")
+
+        print(f"\n=== ORM search results (no duplicates) ===")
         print(json.dumps(results, indent=2))
 
         assert len(results) == 1

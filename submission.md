@@ -212,16 +212,33 @@ The `search_songs()` function uses an unnecessary `LEFT OUTER JOIN` with `song_t
 
 However, SQLAlchemy's ORM deduplicates these rows back to a single Song instance with all tags properly loaded in the tags array. So at the Python level, only 1 result is returned (not 3 visible duplicates).
 
+**How I found the root cause:**
+I examined `services/search_service.py` lines 25-35 where the search query is built. I immediately noticed the `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` on line 27. This was suspicious because the Song model in `models.py` line 90 already defines a `tags` relationship with `lazy="subquery"` that automatically loads all associated tags. The outerjoin appeared redundant. I verified by checking how tags are returned in `models.py` line 102—the `to_dict()` method includes `[tag.name for tag in self.tags]`, which already loads tags via the relationship. The moment I was confident: the redundant join serves no purpose since the ORM relationship already handles tag loading efficiently without creating duplicate rows at the SQL level.
+
 **Root Cause:**
-The outerjoin is redundant because the Song model already has a `tags` relationship with `lazy="subquery"` that automatically loads all associated tags. The join creates unnecessary complexity and inefficient SQL without providing any benefit.
+The outerjoin is redundant because the Song model already has a `tags` relationship with `lazy="subquery"` that automatically loads all associated tags. The join creates unnecessary complexity and inefficient SQL without providing any benefit. By querying only the Song table directly (without the outer join), the tags are automatically loaded through the ORM relationship, resulting in a single row per song at the SQL level instead of one row per tag.
 
-**Test:**
-Created `test_search_no_duplicate_results_with_multi_tags()` in `tests/test_search.py` that:
-1. Queries the raw SQL to show all rows produced by the outerjoin
-2. Asserts that the outerjoin should produce at most 1 row (fails if more than 1 row is produced)
-3. Verifies that the search function returns 1 result with all tags properly loaded
+**Your fix and side-effect check:**
+I removed the redundant `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` call from `search_service.py` lines 25-35. The updated `search_songs()` function now queries only the Song table:
+```python
+results = (
+    db.session.query(Song)
+    .filter(
+        db.or_(
+            Song.title.ilike(f"%{query}%"),
+            Song.artist.ilike(f"%{query}%"),
+        )
+    )
+    .all()
+)
+```
 
-This test demonstrates the issue and will fail if the outerjoin produces duplicate rows.
+This eliminates the unnecessary SQL join. Tags are still properly loaded because the Song model's `lazy="subquery"` relationship automatically fetches all associated tags when `song.to_dict()` is called, which includes `[tag.name for tag in self.tags]`.
+
+**Side-effect check:**
+1. Ran all existing search tests (`test_search_returns_matching_songs`, `test_search_no_duplicates_single_tag_song`, `test_search_no_duplicates_multi_tag_song`, `test_search_no_duplicates_no_tag_song`, `test_search_returns_empty_for_no_match`) — all pass.
+2. Created `test_search_no_duplicates_without_outerjoin()` to verify that the direct Song query produces no duplicate rows and returns correct tag data. I had to test the fix by running a raw SQL query instead of the search_song function because SQLAlchemy's ORM deduplication removes the issue of returning duplicates. If the query were run as raw SQL, the issue is more obvious.
+3. Verified that the API endpoint `GET /songs/search?q=<query>` in `routes/songs.py` still correctly returns search results with all tags intact
 
 ---
 
@@ -308,3 +325,22 @@ The test `test_last_song_is_included_in_results()` fails with: "Song 'Track 5' n
 **Hypothesis & Fix:** The slice operation is a bug—there's no reason to exclude the last song. Removing `[:-1]` returns all songs as expected.
 
 ---
+
+### Bug #3: Duplicate Search Results
+
+**Tracing from symptom to code:**
+The test for songs with multiple tags showed that search might be inefficient. I traced the call chain:
+- Route called: `GET /songs/search?q=<query>` in `routes/songs.py`
+- Routes to service: `search_service.search_songs(query)` in `services/search_service.py`
+- Read the query builder in lines 44-47 of `search_service.py` and saw a `LEFT OUTER JOIN` with `song_tags`
+
+**Navigation strategy:** The test output and codebase map suggested the Song model already has a `tags` relationship, so I checked `models.py`. On line 26, I saw `tags = relationship('Tag', ...)` with `lazy="subquery"`. This is a key detail: the relationship automatically loads all tags without an explicit join.
+
+**AI's role:** I asked AI: "In SQLAlchemy, if a model has a many-to-many relationship with `lazy='subquery'`, why would adding a `LEFT OUTER JOIN` to the same table be redundant?" AI explained that the join creates one row per tag association, causing SQLAlchemy's ORM to deduplicate at the Python level, but the SQL itself is inefficient and creates unnecessary database load.
+
+**Verification:** I examined the code path:
+- Lines 44-47 in `search_service.py` perform the outerjoin
+- Line 26 in `models.py` shows the Song model already has `tags` defined with lazy loading
+- The query is redundant: the `tags` relationship already handles loading all associated tags
+
+**Hypothesis & Fix:** The `LEFT OUTER JOIN` is unnecessary because SQLAlchemy's relationship lazy loading already handles it. Removing the outerjoin simplifies the query without losing any data.
