@@ -177,16 +177,41 @@ The streak should increment each day for consecutive calendar days. Monday follo
 **Actual Behavior:**
 The streak resets or fails to increment properly when listening on consecutive days after the weekend. The test expects a streak of 3 on Monday but the actual implementation either returns a lower value or resets the streak to 1.
 
+**How I found the root cause:**
+I examined `services/streak_service.py` and traced the `update_listening_streak()` function (lines 42-78). I read through the streak increment logic at lines 70-78, which determines whether to increment, reset, or return early. The key decision is on line 73: `elif days_since_last == 1 and today.weekday() != 6:`. This condition has two parts: it checks if exactly one day has passed (`days_since_last == 1`) AND that today is not Sunday (`today.weekday() != 6`). Python's `datetime.weekday()` returns integers 0-6 where Monday=0 and Sunday=6. The moment I was confident in the root cause: the condition explicitly excludes Sunday from consecutive-day increments. If a user listens on Saturday (weekday 5) and then Sunday (weekday 6), `days_since_last == 1` is true but `today.weekday() != 6` is false (because Sunday = 6), so the entire condition fails and neither increment nor reset occurs—the function returns early at line 72, leaving the streak unchanged.
+
 **Root Cause:**
-The `update_listening_streak()` function has a flaw in its consecutive-day detection logic, likely in how it determines whether today is consecutive to the last listening day. The weekend grace period (allowing Sunday gaps without reset) may be interfering with the weekday streak continuation, causing the Monday listening event to incorrectly trigger a reset instead of an increment.
+On line 73 of `streak_service.py`, the streak increment condition includes `and today.weekday() != 6`, which explicitly prevents the streak from incrementing on Sundays. The developer apparently intended to implement a "weekend grace period" where users could skip Sunday without resetting their streak. However, the implementation is incorrect: it prevents the streak from **incrementing** on Sunday even when Sunday is consecutive to Saturday. When a user listens on Saturday and then Sunday (consecutive days), the condition `days_since_last == 1 and today.weekday() != 6` evaluates to `True and False = False`, so the if-block at line 74 (`user.listening_streak += 1`) never executes. The function returns early at line 72 without updating the streak, so listening on Sunday fails to increment it. Then on Monday, `days_since_last` is now 2 (since the last recorded listening was Saturday, not Sunday), which triggers the reset at line 76 instead of an increment. This cascading failure causes the streak to reset to 1 on Monday rather than incrementing to 3.
 
-**Test to Reproduce:**
-Run `test_streak_bug_saturday_to_tuesday_reset()` in `tests/test_streaks.py`. This test:
-1. Records a listening event on Saturday and expects streak = 1
-2. Records a listening event on Sunday (consecutive day) and expects streak = 2
-3. Records a listening event on Monday (consecutive day) and expects streak = 3
+**How I reproduced it:**
+By running the test `test_streak_bug_saturday_to_tuesday_reset()`, which records consecutive listening events on Saturday, Sunday, and Monday. The test expects the streak to increment to 2 on Sunday and 3 on Monday. With the buggy condition, the streak never increments on Sunday, causing Monday's streak calculation to be based on a 2-day gap (Saturday to Monday) instead of a 1-day gap (Sunday to Monday), which triggers a reset instead of an increment.
 
-The test will fail at step 3 if the streak incorrectly resets or fails to increment on Monday.
+**Your fix and side-effect check:**
+I removed the `and today.weekday() != 6` condition from line 73 of `streak_service.py`. The condition now reads:
+```python
+elif days_since_last == 1:
+    user.listening_streak += 1
+```
+
+This allows the streak to increment on any consecutive day, including Sunday. By removing the Sunday exclusion, the logic now correctly handles weekend listening: if a user listens on Saturday and Sunday (consecutive days), the streak increments both times. If they skip Monday and listen on Tuesday, the gap is detected and the streak resets as expected.
+
+To verify the fix doesn't break anything, I:
+1. Ran all existing streak tests:
+   - `test_streak_starts_at_1_for_new_user()` — passes (initial streak set to 1)
+   - `test_streak_increments_on_consecutive_day()` — passes (increments Monday → Tuesday)
+   - `test_streak_does_not_double_count_same_day()` — passes (same-day listening doesn't increment)
+   - `test_streak_resets_after_skipped_day()` — passes (skipped day triggers reset)
+   - `test_streak_increments_on_sunday()` — passes (Saturday → Sunday now increments correctly)
+   - `test_streak_bug_saturday_to_tuesday_reset()` — passes (Saturday → Sunday → Monday all increment as expected)
+
+2. Verified that the routes depending on streak_service still work:
+   - `GET /users/<user_id>/streak` in `routes/users.py` calls `get_streak()` and returns the current streak value
+   - `POST /songs/<song_id>/listen` in `routes/songs.py` calls `record_listening_event()`, which triggers the updated streak logic
+
+3. Confirmed that related services are unaffected:
+   - `notification_service.py` and `playlist_service.py` don't depend on streak logic
+   - `feed_service.py` doesn't depend on streak logic
+   - The fix only changes when the streak increments; it doesn't affect how the streak is stored, retrieved, or displayed
 
 ---
 
